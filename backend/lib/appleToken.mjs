@@ -18,7 +18,7 @@ export async function getBearerToken() {
   const jsRes = await fetch('https://music.apple.com' + m[0])
   if (!jsRes.ok) throw new Error(`bundle returned ${jsRes.status}`)
   const js = await jsRes.text()
-  const tokenMatch = js.match(/eyJh[A-Za-z0-9_\-\.]+/)
+  const tokenMatch = js.match(/eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/)
   if (!tokenMatch) throw new Error('no JWT token found in bundle')
 
   cached = { token: tokenMatch[0], expiresAt: now + TTL_MS }
