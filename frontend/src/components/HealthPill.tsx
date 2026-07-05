@@ -27,10 +27,7 @@ export function HealthPill({ health, loading, variant = 'default' }: Props) {
     }
     return <Badge variant="ok" className={shellClass}>● Ready</Badge>
   }
-  const wrapperDown =
-    !health.wrapper?.decrypt?.ok &&
-    !health.wrapper?.m3u8?.ok &&
-    !health.wrapper?.account?.ok
+  const wrapperDown = isWrapperDown(health)
   let label = 'Issue'
   let title = 'Something is not ready'
   if (wrapperDown) {
@@ -59,4 +56,22 @@ export function HealthPill({ health, loading, variant = 'default' }: Props) {
       ● {label}
     </Badge>
   )
+}
+
+function isWrapperDown(health: HealthReport): boolean {
+  return (
+    !health.wrapper?.decrypt?.ok &&
+    !health.wrapper?.m3u8?.ok &&
+    !health.wrapper?.account?.ok
+  )
+}
+
+export function getHealthPillTarget(health: HealthReport | null): string {
+  if (!health) return '/status'
+  return isWrapperDown(health) ? '/settings' : '/status'
+}
+
+export function getHealthPillAriaLabel(health: HealthReport | null): string {
+  if (!health) return 'Open status'
+  return isWrapperDown(health) ? 'Open settings' : 'Open status'
 }

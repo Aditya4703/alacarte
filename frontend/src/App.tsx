@@ -13,7 +13,7 @@ import { SettingsPage } from './pages/Settings'
 import { FollowingPage } from './pages/Following'
 import { CloudLibraryPage } from './pages/CloudLibrary'
 import { TopBar } from './components/TopBar'
-import { HealthPill } from './components/HealthPill'
+import { HealthPill, getHealthPillTarget, getHealthPillAriaLabel } from './components/HealthPill'
 import { PageWrapper } from './components/PageWrapper'
 import { AuthScreen } from './components/AuthScreen'
 import { useHealth } from './hooks/useHealth'
@@ -148,7 +148,7 @@ function AuthedApp() {
               transition={{ type: 'spring', stiffness: 400, damping: 25 }}
               className="shadow-2xl rounded-full pointer-events-auto"
             >
-              <Link to="/status" aria-label="Open status" className="block transition-transform duration-[400ms] ease-smooth hover:scale-[1.03] active:scale-95 group">
+              <Link to={getHealthPillTarget(health)} aria-label={getHealthPillAriaLabel(health)} className="block transition-transform duration-[400ms] ease-smooth hover:scale-[1.03] active:scale-95 group">
                 <HealthPill health={health} loading={loading} variant="shell" />
               </Link>
             </motion.div>

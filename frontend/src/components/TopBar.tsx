@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { ArrowLeft, Home as HomeIcon, Menu, Search as SearchIcon } from 'lucide-react'
 
-import { HealthPill } from './HealthPill'
+import { HealthPill, getHealthPillTarget, getHealthPillAriaLabel } from './HealthPill'
 import { NavDrawer } from './NavDrawer'
 import type { HealthReport } from '../api/client'
 import { cx } from '../lib/cx'
@@ -127,7 +127,7 @@ export function TopBar({ health, loading }: Props) {
             <Link to="/search" className={iconBtn} aria-label="Search">
               <SearchIcon className="h-4 w-4" />
             </Link>
-            <Link to="/status" aria-label="Open status" className="group hidden md:inline-flex">
+            <Link to={getHealthPillTarget(health)} aria-label={getHealthPillAriaLabel(health)} className="group hidden md:inline-flex">
               <HealthPill health={health} loading={loading} variant="shell" />
             </Link>
           </div>
