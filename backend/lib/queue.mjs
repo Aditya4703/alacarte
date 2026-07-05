@@ -52,6 +52,19 @@ const FIRST_LINE_TIMEOUT_MS = Math.max(
   5_000,
   Number(process.env.AMDL_FIRST_LINE_TIMEOUT_MS) || 30_000,
 )
+const MAX_DOWNLOAD_ERRORS = Math.max(
+  1,
+  Number(process.env.AMDL_MAX_DOWNLOAD_ERRORS) || 3,
+)
+const FATAL_DOWNLOAD_PATTERNS = [
+  /invalid CKC/i,
+  /CKC.*error/i,
+  /failed to get CKC/i,
+  /decryption failed/i,
+  /decrypt.*error/i,
+  /license.*error/i,
+  /DRM.*error/i,
+]
 
 const state = {
   jobs: new Map(), // id -> job
@@ -1607,6 +1620,8 @@ async function runAmdpDownload({ job, jobStaging, url, quality, isSong, progress
   const startedAt = Date.now()
   let warnFired = false
   let stallReason = null
+  let fatalErrorCount = 0
+  let fatalAbortReason = null
   const watchdog = setInterval(() => {
     if (stallReason) return
     const idleMs = Date.now() - lastLineAt
@@ -1646,6 +1661,15 @@ async function runAmdpDownload({ job, jobStaging, url, quality, isSong, progress
       }
       return
     }
+    const errorLines = job.stats.failed || 0
+    if (errorLines >= MAX_DOWNLOAD_ERRORS * 10 && !stallReason && !fatalAbortReason) {
+      fatalAbortReason = `download produced ${errorLines} error lines — likely stuck in a retry loop`
+      try {
+        ctl.abort()
+      } catch {
+      }
+      return
+    }
     if (idleMs >= STALL_WARN_MS && !warnFired) {
       warnFired = true
       emitEvent('wrapper.stall.suspected', {
@@ -1672,6 +1696,13 @@ async function runAmdpDownload({ job, jobStaging, url, quality, isSong, progress
         lastLine = line
         firstLineSeen = true
         handleAmdpLine(job, line, which, progressState)
+        if (!fatalAbortReason && FATAL_DOWNLOAD_PATTERNS.some(re => re.test(line))) {
+          fatalErrorCount++
+          if (fatalErrorCount >= MAX_DOWNLOAD_ERRORS) {
+            fatalAbortReason = `download aborted after ${fatalErrorCount} fatal error(s): ${line.slice(0, 200)}`
+            try { ctl.abort() } catch {}
+          }
+        }
       },
     })
     try {
@@ -1683,6 +1714,11 @@ async function runAmdpDownload({ job, jobStaging, url, quality, isSong, progress
       if (stallReason) {
         const e = new Error(stallReason)
         e.code = 'WRAPPER_STALL'
+        throw e
+      }
+      if (fatalAbortReason) {
+        const e = new Error(fatalAbortReason)
+        e.code = 'DOWNLOAD_FATAL'
         throw e
       }
       throw err
