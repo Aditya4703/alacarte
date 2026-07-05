@@ -12,6 +12,12 @@ const WRAPPER_CONTAINER = 'alacarte-wrapper'
 const TEMP_CONTAINER = 'alacarte-wrapper-login'
 const DEFAULT_NETWORK = 'alacarte-net'
 const WRAPPER_DATA_IN_WEB = '/wrapper-data'
+const WRAPPER_DEV_BINDS = [
+  '/dev/null:/app/rootfs/dev/null',
+  '/dev/urandom:/app/rootfs/dev/urandom',
+  '/dev/random:/app/rootfs/dev/random',
+  '/dev/zero:/app/rootfs/dev/zero',
+]
 
 const REACHABILITY_ERROR = 'Apple services are not reachable from this host. This usually happens on VPS / datacenter IPs that Apple blocks. Try a residential network or a residential proxy and retry.'
 const RESPONSE_TYPE_HINTS = {
@@ -70,8 +76,10 @@ async function captureWrapperSpec() {
     const bind = dataMount?.Source
       ? `${dataMount.Source}:/app/rootfs/data`
       : null
+    const networkMode = info.HostConfig?.NetworkMode
     const networks = Object.keys(info.NetworkSettings?.Networks || {})
-    const network = networks[0] || null
+    const network =
+      networkMode && networkMode !== 'default' ? networkMode : networks[0] || null
     const labels = info.Config?.Labels || null
     return { bind, network, labels }
   } catch {
@@ -79,15 +87,66 @@ async function captureWrapperSpec() {
   }
 }
 
+async function deriveWrapperBindFromWebContainer() {
+  try {
+    const selfId = process.env.HOSTNAME
+    if (!selfId) return null
+    const info = await docker.getContainer(selfId).inspect()
+    const wrapperMount = (info.Mounts || []).find(
+      (x) => x.Destination === WRAPPER_DATA_IN_WEB,
+    )
+    if (!wrapperMount?.Source) return null
+    return `${wrapperMount.Source}:/app/rootfs/data`
+  } catch {
+    return null
+  }
+}
+
 function resolveWrapperNetwork(spec) {
   return spec?.network || process.env.AMDL_WRAPPER_NETWORK || DEFAULT_NETWORK
 }
 
-function requireWrapperBind(spec) {
+async function resolveWrapperBind(spec) {
   if (spec?.bind) return spec.bind
+  const derived = await deriveWrapperBindFromWebContainer()
+  if (derived) return derived
   throw new Error(
     'cannot locate wrapper data volume — start the stack with `docker compose up -d` at least once so the wrapper container is created before attempting login',
   )
+}
+
+function wrapperContainerCreateOpts({
+  name,
+  cmd,
+  network,
+  bind,
+  labels,
+  restartPolicy = { Name: 'no' },
+}) {
+  const opts = {
+    name,
+    Image: WRAPPER_IMAGE,
+    Platform: 'linux/amd64',
+    Env: ['LD_PRELOAD=/app/libwrapper_strtok_fix.so'],
+    Entrypoint: ['/app/wrapper'],
+    Cmd: cmd,
+    ExposedPorts: {
+      '10020/tcp': {},
+      '20020/tcp': {},
+      '30020/tcp': {},
+    },
+    HostConfig: {
+      Binds: [bind, ...WRAPPER_DEV_BINDS],
+      NetworkMode: network,
+      AutoRemove: false,
+      RestartPolicy: restartPolicy,
+    },
+    Labels: labels,
+  }
+  if (network && !network.startsWith('container:')) {
+    opts.NetworkingConfig = { EndpointsConfig: { [network]: {} } }
+  }
+  return opts
 }
 
 function shellQuote(s) {
@@ -272,7 +331,7 @@ async function runLoginFlow() {
   await safeRemoveContainer(TEMP_CONTAINER)
   const spec = await captureWrapperSpec()
   active.wrapperSpec = spec
-  const bind = requireWrapperBind(spec)
+  const bind = await resolveWrapperBind(spec)
   const network = resolveWrapperNetwork(spec)
   await safeRemoveContainer(WRAPPER_CONTAINER)
   await clearStale2faFile()
@@ -280,27 +339,14 @@ async function runLoginFlow() {
   const loginArg = `${active.email}:${active.password}`
 
   emitStatus({ phase: 'creating' })
-  const container = await docker.createContainer({
-    name: TEMP_CONTAINER,
-    Image: WRAPPER_IMAGE,
-    Env: ['LD_PRELOAD=/app/libwrapper_strtok_fix.so'],
-    Entrypoint: ['/app/wrapper'],
-    Cmd: ['-L', loginArg, '-F', '-H', '0.0.0.0'],
-    ExposedPorts: {
-      '10020/tcp': {},
-      '20020/tcp': {},
-      '30020/tcp': {},
-    },
-    HostConfig: {
-      Binds: [bind],
-      NetworkMode: network,
-      AutoRemove: false,
-      RestartPolicy: { Name: 'no' },
-    },
-    NetworkingConfig: {
-      EndpointsConfig: { [network]: {} },
-    },
-  })
+  const container = await docker.createContainer(
+    wrapperContainerCreateOpts({
+      name: TEMP_CONTAINER,
+      cmd: ['-L', loginArg, '-F', '-H', '0.0.0.0'],
+      network,
+      bind,
+    }),
+  )
   active.container = container
 
   const logStream = await container.attach({
@@ -501,30 +547,20 @@ export async function cancelLogin() {
 
 async function startMainWrapper() {
   const spec = active?.wrapperSpec || (await captureWrapperSpec())
-  const bind = requireWrapperBind(spec)
+  const bind = await resolveWrapperBind(spec)
   const network = resolveWrapperNetwork(spec)
   const labels = spec.labels || { 'com.docker.compose.service': 'wrapper' }
   await safeRemoveContainer(WRAPPER_CONTAINER)
-  const container = await docker.createContainer({
-    name: WRAPPER_CONTAINER,
-    Image: WRAPPER_IMAGE,
-    Entrypoint: ['/app/wrapper'],
-    Cmd: ['-H', '0.0.0.0'],
-    ExposedPorts: {
-      '10020/tcp': {},
-      '20020/tcp': {},
-      '30020/tcp': {},
-    },
-    HostConfig: {
-      Binds: [bind],
-      NetworkMode: network,
-      RestartPolicy: { Name: 'on-failure', MaximumRetryCount: 3 },
-    },
-    NetworkingConfig: {
-      EndpointsConfig: { [network]: {} },
-    },
-    Labels: labels,
-  })
+  const container = await docker.createContainer(
+    wrapperContainerCreateOpts({
+      name: WRAPPER_CONTAINER,
+      cmd: ['-H', '0.0.0.0'],
+      network,
+      bind,
+      labels,
+      restartPolicy: { Name: 'on-failure', MaximumRetryCount: 3 },
+    }),
+  )
   await container.start()
 }
 

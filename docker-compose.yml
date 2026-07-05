@@ -10,6 +10,12 @@ services:
     platform: linux/amd64
     volumes:
       - ./data/wrapper:/app/rootfs/data
+      # The chroot dev/ ships empty (.gitkeep only); the Android runtime needs
+      # working device nodes.  Explicit bind-mounts work on both Docker and Podman.
+      - /dev/null:/app/rootfs/dev/null
+      - /dev/urandom:/app/rootfs/dev/urandom
+      - /dev/random:/app/rootfs/dev/random
+      - /dev/zero:/app/rootfs/dev/zero
     # Bypass the image's `bash -c "/app/wrapper $args"` entrypoint and hand
     # argv straight to the binary — avoids all shell-quoting pitfalls.
     entrypoint: ["/app/wrapper"]
@@ -53,7 +59,7 @@ services:
       # Required so the web UI can run first-time Apple ID login for the
       # wrapper container automatically. Treat this as root-on-host access;
       # only expose the web UI on trusted networks.
-      - /var/run/docker.sock:/var/run/docker.sock
+      - ${CONTAINER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
     # Default (WEB_BIND unset/empty) publishes on all interfaces — same as
     # docker's default. Set WEB_BIND=127.0.0.1 in .env to restrict the UI to
     # the host machine only when fronting with a reverse proxy.
