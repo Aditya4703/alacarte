@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api, type Job, type ReleaseScope } from "../api/client";
 import { stripYear } from "../lib/format";
@@ -166,6 +166,83 @@ export function useActivityFeed() {
         });
     };
 
+    // --- Batched terminal line appender ---
+    // Collects lines and flushes them in a single React state update per
+    // animation frame, preventing render storms from rapid SSE events.
+    const terminalBufferRef = useRef<ActivityTerminalLine[]>([]);
+    const terminalRafRef = useRef<number | null>(null);
+
+    const flushTerminalBuffer = useCallback(() => {
+        terminalRafRef.current = null;
+        const batch = terminalBufferRef.current;
+        if (batch.length === 0) return;
+        terminalBufferRef.current = [];
+        setTerminalLines((prev) => {
+            const next = [...prev, ...batch];
+            return next.length <= MAX_TERMINAL_LINES
+                ? next
+                : next.slice(next.length - MAX_TERMINAL_LINES);
+        });
+    }, []);
+
+    const appendTerminalLineBatched = useCallback(
+        (line: ActivityTerminalLine) => {
+            terminalBufferRef.current.push(line);
+            if (terminalRafRef.current == null) {
+                terminalRafRef.current =
+                    requestAnimationFrame(flushTerminalBuffer);
+            }
+        },
+        [flushTerminalBuffer],
+    );
+
+    // Cleanup pending RAF on unmount
+    useEffect(() => {
+        return () => {
+            if (terminalRafRef.current != null) {
+                cancelAnimationFrame(terminalRafRef.current);
+            }
+        };
+    }, []);
+
+    // --- Batched job state updater ---
+    // Coalesces rapid job.update events into a single setJobs call every 200ms.
+    const jobUpdateBufferRef = useRef<Record<string, Job>>({});
+    const jobFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    const flushJobUpdates = useCallback(() => {
+        jobFlushTimerRef.current = null;
+        const batch = jobUpdateBufferRef.current;
+        if (Object.keys(batch).length === 0) return;
+        jobUpdateBufferRef.current = {};
+        setJobs((prev) => {
+            const next = { ...prev };
+            for (const [id, job] of Object.entries(batch)) {
+                next[id] = { ...prev[id], ...job };
+            }
+            return next;
+        });
+    }, []);
+
+    const batchJobUpdate = useCallback(
+        (job: Job) => {
+            jobUpdateBufferRef.current[job.id] = job;
+            if (!jobFlushTimerRef.current) {
+                jobFlushTimerRef.current = setTimeout(flushJobUpdates, 200);
+            }
+        },
+        [flushJobUpdates],
+    );
+
+    // Cleanup pending timer on unmount
+    useEffect(() => {
+        return () => {
+            if (jobFlushTimerRef.current != null) {
+                clearTimeout(jobFlushTimerRef.current);
+            }
+        };
+    }, []);
+
     useEffect(() => {
         let cancelled = false;
 
@@ -228,10 +305,24 @@ export function useActivityFeed() {
 
             if (type === "job.created" || type === "job.update") {
                 const job = data as Job;
-                setJobs((prev) => ({
-                    ...prev,
-                    [job.id]: { ...prev[job.id], ...job },
-                }));
+
+                // Terminal statuses flush immediately for instant UI feedback;
+                // in-progress updates are batched to avoid render storms.
+                const isTerminal =
+                    job.status === "done" || job.status === "failed";
+                if (type === "job.created" || isTerminal) {
+                    // Flush any pending batched updates first so ordering is correct
+                    if (Object.keys(jobUpdateBufferRef.current).length > 0) {
+                        delete jobUpdateBufferRef.current[job.id];
+                        flushJobUpdates();
+                    }
+                    setJobs((prev) => ({
+                        ...prev,
+                        [job.id]: { ...prev[job.id], ...job },
+                    }));
+                } else {
+                    batchJobUpdate(job);
+                }
 
                 const signature = buildJobSignature(job);
                 const previousSignature = jobFeedSignatureRef.current.get(
@@ -249,7 +340,7 @@ export function useActivityFeed() {
                             `feed-${nextId()}`,
                         ),
                     );
-                    appendTerminalLine(
+                    appendTerminalLineBatched(
                         makeJobEventLine(
                             job,
                             job.updatedAt || now,
@@ -264,7 +355,7 @@ export function useActivityFeed() {
                 const event = data as JobLogEvent;
                 const line = String(event?.line || "").trim();
                 if (!line) return;
-                appendTerminalLine({
+                appendTerminalLineBatched({
                     id: `job-log-${nextId()}`,
                     ts: now,
                     source: "job",

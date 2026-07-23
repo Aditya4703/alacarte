@@ -1,9 +1,9 @@
 import crypto from 'node:crypto'
 import path from 'node:path'
 import fsp from 'node:fs/promises'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 
-import { emitEvent } from './eventBus.mjs'
+import { emitEvent, createThrottledEmitter, createBatchEmitter } from './eventBus.mjs'
 import { readSettings, readAppleCreds } from './settingsStore.mjs'
 import {
   artworkUrl,
@@ -72,6 +72,12 @@ const state = {
   active: new Set(),
   running: new Map(), // id -> abortController
 }
+
+// Throttled emitters to avoid SSE flooding during downloads.
+// job.update: only the latest state matters, emit at most every 300ms.
+const throttledJobUpdate = createThrottledEmitter('job.update', 300)
+// job.log: batch log lines and flush every 250ms.
+const batchedJobLog = createBatchEmitter('job.log', 250)
 
 function createProgressState(job, { convertEnabled }) {
   const knownTotal = Number(job?.stats?.total || 0)
@@ -158,7 +164,16 @@ function updateJob(id, patch) {
   const j = state.jobs.get(id)
   if (!j) return
   Object.assign(j, patch, { updatedAt: Date.now() })
-  emitEvent('job.update', jobPublic(j))
+  const pub = jobPublic(j)
+  // Terminal states (done/failed) flush immediately so the UI updates instantly.
+  // In-progress updates are throttled to avoid SSE flooding.
+  if (pub.status === 'done' || pub.status === 'failed') {
+    throttledJobUpdate.flush(id)
+    batchedJobLog.flush(id)
+    emitEvent('job.update', pub)
+  } else {
+    throttledJobUpdate.emit(id, pub)
+  }
 }
 
 function makeAbortError() {
@@ -661,7 +676,7 @@ async function runJob(job) {
     throwIfCancelled(job)
     updateJob(job.id, { status: 'running', message: 'Preparing' })
     throwIfCancelled(job)
-    const mp4box = probeMp4Box()
+    const mp4box = await probeMp4Box()
     if (!mp4box.ok) {
       throw new Error(
         `MP4Box preflight failed: ${mp4box.error}. Rebuild the web image so apple-music-dl can finalize MP4 files.`,
@@ -1062,6 +1077,9 @@ async function runJob(job) {
     }
     await appendHistory(job).catch(() => {})
   } finally {
+    // Ensure any buffered SSE events for this job are delivered before cleanup.
+    throttledJobUpdate.flush(job.id)
+    batchedJobLog.flush(job.id)
     if (jobStaging) {
       await fsp.rm(jobStaging, { recursive: true, force: true }).catch(() => {})
     }
@@ -1564,7 +1582,7 @@ function handleAmdpLine(job, line, which, progressState) {
     job.stats.failed = (job.stats.failed || 0) + 1
   }
 
-  emitEvent('job.log', { id: job.id, line, which })
+  batchedJobLog.push(job.id, { id: job.id, line, which })
 }
 
 function extractBracketTitle(line) {
@@ -1572,26 +1590,37 @@ function extractBracketTitle(line) {
   return m ? m[1].trim() : null
 }
 
-function probeMp4Box() {
-  try {
-    const r = spawnSync('MP4Box', ['-version'], {
-      encoding: 'utf8',
-      timeout: 2500,
-    })
-    const out = `${r.stdout || ''}\n${r.stderr || ''}`
-    if (r.status === 0 && /GPAC version/i.test(out)) {
-      return { ok: true, error: null }
+async function probeMp4Box() {
+  return new Promise((resolve) => {
+    try {
+      const proc = spawn('MP4Box', ['-version'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 5000,
+      })
+      let out = ''
+      proc.stdout.on('data', (d) => { out += d.toString() })
+      proc.stderr.on('data', (d) => { out += d.toString() })
+      proc.on('error', (err) => {
+        if (err.code === 'ENOENT') {
+          resolve({ ok: false, error: 'executable not found in PATH' })
+        } else {
+          resolve({ ok: false, error: err.message || 'unknown preflight error' })
+        }
+      })
+      proc.on('close', (code) => {
+        if (code === 0 && /GPAC version/i.test(out)) {
+          resolve({ ok: true, error: null })
+        } else {
+          resolve({
+            ok: false,
+            error: `exit ${code ?? 'unknown'}`,
+          })
+        }
+      })
+    } catch (err) {
+      resolve({ ok: false, error: err.message || 'unknown preflight error' })
     }
-    if (r.error?.code === 'ENOENT') {
-      return { ok: false, error: 'executable not found in PATH' }
-    }
-    return {
-      ok: false,
-      error: `exit ${r.status ?? 'unknown'}${r.signal ? ` (${r.signal})` : ''}`,
-    }
-  } catch (err) {
-    return { ok: false, error: err.message || 'unknown preflight error' }
-  }
+  })
 }
 
 function buildAmdpArgs({ isSong, quality, url }) {
@@ -1894,36 +1923,46 @@ function inferArtistAlbumFromPath(parts) {
 }
 
 async function probeAudioTags(filePath) {
-  const result = spawnSync(
-    'ffprobe',
-    [
-      '-v',
-      'error',
-      '-show_entries',
-      'format_tags=artist,album,title',
-      '-of',
-      'json',
-      filePath,
-    ],
-    {
-      encoding: 'utf8',
-      timeout: 5000,
-    },
-  )
-  if (result.status !== 0 || !result.stdout) {
-    return { artist: null, album: null, title: null }
-  }
-  try {
-    const parsed = JSON.parse(result.stdout)
-    const tags = parsed?.format?.tags || {}
-    return {
-      artist: cleanTag(tags.artist),
-      album: cleanTag(tags.album),
-      title: cleanTag(tags.title),
+  return new Promise((resolve) => {
+    const empty = { artist: null, album: null, title: null }
+    try {
+      const proc = spawn(
+        'ffprobe',
+        [
+          '-v',
+          'error',
+          '-show_entries',
+          'format_tags=artist,album,title',
+          '-of',
+          'json',
+          filePath,
+        ],
+        {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          timeout: 10000,
+        },
+      )
+      let stdout = ''
+      proc.stdout.on('data', (d) => { stdout += d.toString() })
+      proc.on('error', () => resolve(empty))
+      proc.on('close', (code) => {
+        if (code !== 0 || !stdout) return resolve(empty)
+        try {
+          const parsed = JSON.parse(stdout)
+          const tags = parsed?.format?.tags || {}
+          resolve({
+            artist: cleanTag(tags.artist),
+            album: cleanTag(tags.album),
+            title: cleanTag(tags.title),
+          })
+        } catch {
+          resolve(empty)
+        }
+      })
+    } catch {
+      resolve(empty)
     }
-  } catch {
-    return { artist: null, album: null, title: null }
-  }
+  })
 }
 
 function cleanTag(value) {
