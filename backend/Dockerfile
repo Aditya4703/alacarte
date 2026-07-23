@@ -1,4 +1,7 @@
-# Build the frontend (Vite outputs to backend/public via outDir: '../backend/public').
+# ────────────────────────────────────────────────────────────
+# Stage 1: Frontend build (Vite → backend/public)
+# package*.json copied first so npm install is cached unless deps change.
+# ────────────────────────────────────────────────────────────
 FROM node:22-bookworm-slim AS frontend-build
 WORKDIR /app/frontend
 COPY frontend/package*.json ./
@@ -7,11 +10,21 @@ COPY frontend ./
 RUN npm run build
 # Build output is now at /app/backend/public
 
-# Build app deps with Node 22
-FROM node:22-bookworm-slim AS node-build
+# ────────────────────────────────────────────────────────────
+# Stage 2: Backend deps (cached unless package*.json changes)
+# ────────────────────────────────────────────────────────────
+FROM node:22-bookworm-slim AS node-deps
 WORKDIR /app
 COPY backend/package*.json ./
 RUN npm install --omit=dev --no-audit --no-fund
+
+# ────────────────────────────────────────────────────────────
+# Stage 3: Assemble app (backend source + deps + frontend bundle)
+# This is a cheap COPY-only stage — rebuilds instantly on code changes.
+# ────────────────────────────────────────────────────────────
+FROM node:22-bookworm-slim AS node-build
+WORKDIR /app
+COPY --from=node-deps /app/node_modules ./node_modules
 COPY backend/server.mjs ./
 COPY backend/routes ./routes
 COPY backend/lib ./lib
@@ -20,8 +33,10 @@ COPY --from=frontend-build /app/backend/public ./public
 # Source stage for Node 22 runtime binaries
 FROM node:22-bookworm-slim AS node-runtime
 
-# Runtime base: upstream amdp image already contains compatible
-# apple-music-dl + MP4Box + libgpac on Ubuntu 24.04 (glibc 2.39).
+# ────────────────────────────────────────────────────────────
+# Stage 4: Runtime — upstream amdp image + Node 22 + our app
+# The apt-get layer is cached unless the base image changes.
+# ────────────────────────────────────────────────────────────
 FROM ghcr.io/zhaarey/apple-music-downloader:latest
 
 ENV DEBIAN_FRONTEND=noninteractive

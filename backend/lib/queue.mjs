@@ -58,13 +58,15 @@ const MAX_DOWNLOAD_ERRORS = Math.max(
 )
 const FATAL_DOWNLOAD_PATTERNS = [
   /invalid CKC/i,
-  /CKC.*error/i,
+  /CKC.{0,40}error/i,
   /failed to get CKC/i,
   /decryption failed/i,
-  /decrypt.*error/i,
-  /license.*error/i,
-  /DRM.*error/i,
+  /decrypt(?:ion)?\s+(?:error|failed)/i,
+  /license\s+(?:error|failed)/i,
+  /DRM\s+(?:error|failed)/i,
 ]
+// Lines matching this pattern are config dumps from amdp, not real errors.
+const CONFIG_DUMP_RE = /^\{Storefront:/
 
 const state = {
   jobs: new Map(), // id -> job
@@ -1578,7 +1580,7 @@ function handleAmdpLine(job, line, which, progressState) {
     }
   }
 
-  if (which === 'stderr' && /error|failed|forbidden/i.test(line)) {
+  if (which === 'stderr' && /error|failed|forbidden/i.test(line) && !CONFIG_DUMP_RE.test(line)) {
     job.stats.failed = (job.stats.failed || 0) + 1
   }
 
@@ -1725,7 +1727,7 @@ async function runAmdpDownload({ job, jobStaging, url, quality, isSong, progress
         lastLine = line
         firstLineSeen = true
         handleAmdpLine(job, line, which, progressState)
-        if (!fatalAbortReason && FATAL_DOWNLOAD_PATTERNS.some(re => re.test(line))) {
+        if (!fatalAbortReason && !CONFIG_DUMP_RE.test(line) && FATAL_DOWNLOAD_PATTERNS.some(re => re.test(line))) {
           fatalErrorCount++
           if (fatalErrorCount >= MAX_DOWNLOAD_ERRORS) {
             fatalAbortReason = `download aborted after ${fatalErrorCount} fatal error(s): ${line.slice(0, 200)}`
