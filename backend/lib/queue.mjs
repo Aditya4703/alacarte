@@ -45,7 +45,7 @@ const QUALITY_VALUES = new Set(['flac', 'alac', 'atmos', 'aac'])
 const STALL_WARN_MS = Math.max(5_000, Number(process.env.AMDL_STALL_WARN_MS) || 60_000)
 const STALL_TIMEOUT_MS = Math.max(
   STALL_WARN_MS + 5_000,
-  Number(process.env.AMDL_STALL_TIMEOUT_MS) || 120_000,
+  Number(process.env.AMDL_STALL_TIMEOUT_MS) || 300_000,
 )
 const STALL_TICK_MS = 5_000
 const FIRST_LINE_TIMEOUT_MS = Math.max(

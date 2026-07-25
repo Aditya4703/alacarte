@@ -1,4 +1,14 @@
 # ────────────────────────────────────────────────────────────
+# Stage 0: Patched amdl build
+# ────────────────────────────────────────────────────────────
+FROM golang:1.23-bookworm AS amdl-builder
+WORKDIR /src
+RUN git clone https://github.com/zhaarey/apple-music-downloader.git .
+RUN sed -i 's/req.Header = header/req.Header = header\n\treq.Header.Set("User-Agent", "okhttp\/4.12.0")/g' utils/runv2/runv2.go && \
+    sed -i 's/req.Header = header/req.Header = header\n\treq.Header.Set("User-Agent", "okhttp\/4.12.0")/g' utils/runv3/runv3.go
+RUN go build -o apple-music-dl main.go
+
+# ────────────────────────────────────────────────────────────
 # Stage 1: Frontend build (Vite → backend/public)
 # package*.json copied first so npm install is cached unless deps change.
 # ────────────────────────────────────────────────────────────
@@ -52,6 +62,9 @@ COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
 COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
     ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+
+# Inject patched apple-music-dl
+COPY --from=amdl-builder /src/apple-music-dl /usr/local/bin/apple-music-dl
 
 # App
 WORKDIR /app

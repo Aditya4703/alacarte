@@ -57,7 +57,7 @@ export async function writeAmdpConfig({
     'aac-type': 'aac-lc',
     'alac-max': 192000,
     'atmos-max': 2768,
-    'limit-max': 200,
+    'limit-max': 5,
     'album-folder-format': '{AlbumName}',
     'playlist-folder-format': '{PlaylistName}',
     'song-file-format': '{SongNumer}. {SongName}',
