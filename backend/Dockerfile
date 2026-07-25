@@ -4,8 +4,8 @@
 FROM golang:1.23-bookworm AS amdl-builder
 WORKDIR /src
 RUN git clone https://github.com/zhaarey/apple-music-downloader.git .
-RUN sed -i 's/req.Header = header/req.Header = header\n\treq.Header.Set("User-Agent", "okhttp\/4.12.0")/g' utils/runv2/runv2.go && \
-    sed -i 's/req.Header = header/req.Header = header\n\treq.Header.Set("User-Agent", "okhttp\/4.12.0")/g' utils/runv3/runv3.go
+COPY backend/patch_amdl.py /src/patch_amdl.py
+RUN python3 /src/patch_amdl.py /src
 RUN go build -o apple-music-dl main.go
 
 # ────────────────────────────────────────────────────────────
