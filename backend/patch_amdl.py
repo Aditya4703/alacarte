@@ -25,14 +25,48 @@ def patch_file(filepath, replacements):
 def main():
     root = sys.argv[1] if len(sys.argv) > 1 else "."
 
-    # 1. Patch runv2.go and runv3.go for fast downloads (okhttp User-Agent)
-    for sub in ["utils/runv2/runv2.go", "utils/runv3/runv3.go"]:
-        p = os.path.join(root, sub)
-        patch_file(p, [
-            ('req.Header = header', 'req.Header = header\n\treq.Header.Set("User-Agent", "okhttp/4.12.0")')
-        ])
+    # 1. Patch runv3.go for fast downloads (okhttp User-Agent)
+    patch_file(os.path.join(root, "utils/runv3/runv3.go"), [
+        ('req.Header = header', 'req.Header = header\n\treq.Header.Set("User-Agent", "okhttp/4.12.0")')
+    ])
 
-    # 2. Patch lyrics.go for User-Agent, fallback from syllable-lyrics -> lyrics, & nil checks
+    # 2. Patch runv2.go for fast downloads (okhttp User-Agent) AND HTTP Range Retry/Resume loop
+    patch_file(os.path.join(root, "utils/runv2/runv2.go"), [
+        ('req.Header = header', 'req.Header = header\n\treq.Header.Set("User-Agent", "okhttp/4.12.0")'),
+        (
+            'io.Copy(io.MultiWriter(&buffer, bar), do.Body)\n\t\t\tbody = &buffer\n\t\t\tfmt.Print("Downloaded\\n")',
+            '''_, _ = io.Copy(io.MultiWriter(&buffer, bar), do.Body)
+			do.Body.Close()
+			retries := 0
+			for int64(buffer.Len()) < do.ContentLength && retries < 15 {
+				retries++
+				time.Sleep(time.Duration(1000 * retries) * time.Millisecond)
+				resumeReq, rErr := http.NewRequest("GET", fileUrl.String(), nil)
+				if rErr != nil {
+					continue
+				}
+				for k, v := range header {
+					resumeReq.Header[k] = v
+				}
+				resumeReq.Header.Set("User-Agent", "okhttp/4.12.0")
+				resumeReq.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", buffer.Len(), do.ContentLength-1))
+				rDo, rErr := client.Do(resumeReq)
+				if rErr == nil && (rDo.StatusCode == 200 || rDo.StatusCode == 206) {
+					_, _ = io.Copy(io.MultiWriter(&buffer, bar), rDo.Body)
+					rDo.Body.Close()
+				} else if rDo != nil {
+					rDo.Body.Close()
+				}
+			}
+			if int64(buffer.Len()) < do.ContentLength {
+				return fmt.Errorf("download incomplete: got %d of %d bytes after retries", buffer.Len(), do.ContentLength)
+			}
+			body = &buffer
+			fmt.Print("Downloaded\\n")'''
+        )
+    ])
+
+    # 3. Patch lyrics.go for User-Agent, fallback from syllable-lyrics -> lyrics, & nil checks
     lyrics_p = os.path.join(root, "utils/lyrics/lyrics.go")
     patch_file(lyrics_p, [
         (
@@ -53,7 +87,7 @@ def main():
         )
     ])
 
-    # 3. Patch token.go for User-Agent when fetching developer token
+    # 4. Patch token.go for User-Agent when fetching developer token
     token_p = os.path.join(root, "utils/ampapi/token.go")
     patch_file(token_p, [
         (
