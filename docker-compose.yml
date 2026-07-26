@@ -28,6 +28,9 @@ services:
       - alacarte-net
     # on-failure (not unless-stopped) so clean exit due to missing creds doesn't
     # loop forever — the web container surfaces an "enter Apple creds" banner.
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     restart: on-failure
 
   web:
@@ -35,6 +38,9 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     container_name: alacarte-web
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     # Upstream apple-music-downloader image is published amd64-only.
     platform: linux/amd64
     depends_on:
