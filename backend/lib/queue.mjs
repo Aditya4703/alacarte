@@ -1134,7 +1134,9 @@ async function runPartialAlbumFill({
       currentTrack: track.name || null,
     })
 
-    const url = `${baseUrl}?i=${encodeURIComponent(track.id)}`
+    const url = (job.albumId && String(job.albumId) !== String(track.id))
+      ? `${baseUrl}?i=${encodeURIComponent(track.id)}`
+      : `https://music.apple.com/${encodeURIComponent(job.storefront || 'us')}/song/${encodeURIComponent(track.id)}`
     progressState.downloadDone = i
     progressState.downloadPartial = 0
     progressState.lockDownloadTotal = true
@@ -1173,10 +1175,27 @@ async function runPartialAlbumFill({
       assertAmdpResult(sub, combined)
     }
 
-    const artistDirs = await fsp.readdir(trackStaging, { withFileTypes: true })
-    const artistEntry = artistDirs.find((e) => e.isDirectory())
+    let artistDirs = await fsp.readdir(trackStaging, { withFileTypes: true })
+    let artistEntry = artistDirs.find((e) => e.isDirectory())
     if (!artistEntry) {
-      throw new Error(`amdp produced no artist folder for track ${track.id}`)
+      // Automatic single-track retry for transient errors
+      const retrySub = await runAmdpDownload({
+        job,
+        jobStaging: trackStaging,
+        url,
+        quality,
+        isSong: true,
+        progressState,
+      })
+      const retryCombined = `${retrySub.stdout}\n${retrySub.stderr}`
+      artistDirs = await fsp.readdir(trackStaging, { withFileTypes: true })
+      artistEntry = artistDirs.find((e) => e.isDirectory())
+      if (!artistEntry) {
+        const tail = (retryCombined || combined || '').slice(-600).trim()
+        throw new Error(
+          `amdp produced no artist folder for track ${track.id}. Log: ${tail || '(empty)'}`,
+        )
+      }
     }
     const artistPath = path.join(trackStaging, artistEntry.name)
     const albumDirs = await fsp.readdir(artistPath, { withFileTypes: true })
